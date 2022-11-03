@@ -1,6 +1,5 @@
 package javavulkantutorial;
 
-import org.joml.Matrix4f;
 import org.joml.Vector2f;
 import org.lwjgl.glfw.GLFWKeyCallbackI;
 
@@ -16,25 +15,21 @@ public class Main {
     static float playerRotation = 0f;
     static Vector2f playerPos = new Vector2f();
     static Vector2f playerVel = new Vector2f();
-
     static int bgId, playerId, otherId;
 
     public static void main(String[] args) {
-        Engine.initWindow(1000, 1000, "test", keyCallback);
-        Engine.initVulkan();
+        Engine.start(1000, 1000, "test", keyCallback);
 
-        bgId      = Engine.createRenderEntity("texture.jpg");
+        bgId      = Engine.createRenderEntity("vulkan.png");
         playerId  = Engine.createRenderEntity("guy.jpg");
-        otherId   = Engine.createRenderEntity("chalet.jpg");
+        otherId   = Engine.createRenderEntity("texture.jpg");
 
         // initialize timing stuff
         float oldTime = (float) glfwGetTime();
         float newTime;
 
         while(gameRunning) {
-            // update user input stuff
-            glfwPollEvents();
-            gameRunning &= !glfwWindowShouldClose(Engine.window);
+            if (!Engine.processInput()) break;
 
             // timing stuff
             newTime = (float) glfwGetTime();
@@ -42,12 +37,11 @@ public class Main {
             oldTime = newTime;
 
             // game goes here
-            Vector2f inc = new Vector2f().set(playerVel).mul(dt);
-            playerPos.add(inc);
+            playerPos.add(new Vector2f(playerVel).mul(dt));
             playerRotation += ((playerVel.x) + Math.copySign(playerVel.y, playerVel.x))/2f * dt * FUNNY_SPIN_CONSTANT;
             playerVel.mul(1.0f - PLAYER_DRAG);
 
-            // rendering consists of updating the uniform buffers and calling drawFrame with those buffers
+            // rendering consists of updating the uniform buffers and calling drawFrame
             Engine.setEntityModel(playerId, (m) -> m
                     .identity()
                     .scale(PLAYER_SCALE)
@@ -62,15 +56,13 @@ public class Main {
 
             Engine.setEntityModel(bgId, (m) -> m
                     .identity()
-                    .rotate(playerRotation * 0.25f, 0.0f, 0.0f, 1.0f)
-            );
+                    .rotate(playerRotation * 0.25f, 0.0f, 0.0f, 1.0f));
 
             Engine.drawFrame();
         }
 
-        Engine.cleanup();
+        Engine.end();
     }
-
     static GLFWKeyCallbackI keyCallback = (window, key, scanCode, action, mods) -> {
         if (action == GLFW_PRESS) {
             switch (key) {
@@ -78,15 +70,18 @@ public class Main {
                 case GLFW_KEY_ESCAPE:
                     gameRunning = false;
                     break;
+                case GLFW_KEY_SPACE:
+                    Engine.setEntityTexture(bgId, "guy.jpg");
+                    break;
 
                 case GLFW_KEY_LEFT:
-                    playerVel.x += -PLAYER_JOLT_SPEED;
+                    playerVel.x -= PLAYER_JOLT_SPEED;
                     break;
                 case GLFW_KEY_RIGHT:
                     playerVel.x += PLAYER_JOLT_SPEED;
                     break;
                 case GLFW_KEY_UP:
-                    playerVel.y += -PLAYER_JOLT_SPEED;
+                    playerVel.y -= PLAYER_JOLT_SPEED;
                     break;
                 case GLFW_KEY_DOWN:
                     playerVel.y += PLAYER_JOLT_SPEED;

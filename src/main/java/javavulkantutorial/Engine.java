@@ -6,23 +6,27 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.glfw.GLFWKeyCallbackI;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.system.NativeResource;
 import org.lwjgl.system.Pointer;
 import org.lwjgl.vulkan.*;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Field;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static java.lang.ClassLoader.getSystemClassLoader;
 import static java.util.stream.Collectors.toSet;
-import static javavulkantutorial.ShaderSPIRVUtils.ShaderKind.FRAGMENT_SHADER;
-import static javavulkantutorial.ShaderSPIRVUtils.ShaderKind.VERTEX_SHADER;
-import static javavulkantutorial.ShaderSPIRVUtils.compileShaderFile;
+import static javavulkantutorial.Engine.ShaderSPIRVUtils.ShaderKind.FRAGMENT_SHADER;
+import static javavulkantutorial.Engine.ShaderSPIRVUtils.ShaderKind.VERTEX_SHADER;
 import static org.lwjgl.glfw.GLFW.*;
-import static org.lwjgl.glfw.GLFW.glfwGetFramebufferSize;
 import static org.lwjgl.glfw.GLFWVulkan.glfwCreateWindowSurface;
 import static org.lwjgl.glfw.GLFWVulkan.glfwGetRequiredInstanceExtensions;
 import static org.lwjgl.stb.STBImage.*;
@@ -31,13 +35,11 @@ import static org.lwjgl.system.Configuration.DEBUG;
 import static org.lwjgl.system.MemoryStack.stackGet;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
-import static org.lwjgl.system.libc.LibCString.memcpy;
+import static org.lwjgl.util.shaderc.Shaderc.*;
 import static org.lwjgl.vulkan.EXTDebugUtils.*;
-import static org.lwjgl.vulkan.EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 import static org.lwjgl.vulkan.KHRSurface.*;
 import static org.lwjgl.vulkan.KHRSwapchain.*;
 import static org.lwjgl.vulkan.VK10.*;
-import static org.lwjgl.vulkan.VK10.vkEnumerateInstanceLayerProperties;
 
 public class Engine {
 
@@ -68,7 +70,8 @@ public class Engine {
 
         VkDebugUtilsMessengerCallbackDataEXT callbackData = VkDebugUtilsMessengerCallbackDataEXT.create(pCallbackData);
 
-        if (((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) == 0)  || ((messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0)) {
+        // if you want you can move the print outside the if statement to see information about your validation layers
+        if (((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) == 0) || ((messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) == 0)) {
             System.err.println("Validation layer: " + callbackData.pMessageString());
         }
 
@@ -93,10 +96,18 @@ public class Engine {
 
     }
 
-    @FunctionalInterface
-    interface MatrixModifyI {  void modify(Matrix4f m); }
-    public static void setEntityModel(int entityId, MatrixModifyI m) {
-        m.modify(ubo.modelMatrices[entityId]);
+    interface MatrixModifierI {  void modify(Matrix4f m); }
+    public static void setEntityModel(int entityId, MatrixModifierI m) { m.modify(ubo.modelMatrices[entityId]); }
+    public static void setEntityTexture(int entityId, String assetName) {
+        Integer texId = textureCatalogue.get(assetName);
+        if (texId == null) throw new RuntimeException("texture `" + assetName + "` does not exist");
+        setEntityTexture(entityId, texId);
+    }
+    public static void setEntityTexture(int entityId, int texId) { ubo.textureIds[entityId] = texId; }
+
+    public static boolean processInput() {
+        glfwPollEvents();
+        return !glfwWindowShouldClose(window);
     }
 
     private static class QueueFamilyIndices {
@@ -111,10 +122,6 @@ public class Engine {
 
         public int[] unique() {
             return IntStream.of(graphicsFamily, presentFamily).distinct().toArray();
-        }
-
-        public int[] array() {
-            return new int[] {graphicsFamily, presentFamily};
         }
     }
 
@@ -177,32 +184,6 @@ public class Engine {
     static boolean framebufferResize;
 
     // ======= METHODS ======= //
-
-    public static void initWindow(int width, int height, String title, GLFWKeyCallbackI keyCallback) {
-
-        if(!glfwInit()) {
-            throw new RuntimeException("Cannot initialize GLFW");
-        }
-
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-
-        window = glfwCreateWindow(width, height, title, NULL, NULL);
-
-        if(window == NULL) {
-            throw new RuntimeException("Cannot create window");
-        }
-
-        // In Java, we don't really need a user pointer here, because
-        // we can simply pass an instance method reference to glfwSetFramebufferSizeCallback
-        // However, I will show you how can you pass a user pointer to glfw in Java just for learning purposes:
-        // long userPointer = JNINativeInterface.NewGlobalRef(this);
-        // glfwSetWindowUserPointer(window, userPointer);
-        // Please notice that the reference must be freed manually with JNINativeInterface.nDeleteGlobalRef
-        glfwSetFramebufferSizeCallback(window, Engine::framebufferResizeCallback);
-        glfwSetKeyCallback(window, keyCallback);
-    }
-
     private static void framebufferResizeCallback(long window, int width, int height) {
         framebufferResize = true;
     }
@@ -225,11 +206,29 @@ public class Engine {
 
 
     public static int numTextures;
-    public static void initVulkan() {
+    public static void start(int width, int height, String title, GLFWKeyCallbackI keyCallback) {
+        // create the window
+        if(!glfwInit()) {
+            throw new RuntimeException("Cannot initialize GLFW");
+        }
+
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+        window = glfwCreateWindow(width, height, title, NULL, NULL);
+
+        if(window == NULL) {
+            throw new RuntimeException("Cannot create window");
+        }
+
+        // you should add all the callbacks you need here
+        glfwSetFramebufferSizeCallback(window, Engine::framebufferResizeCallback);
+        glfwSetKeyCallback(window, keyCallback);
+
+        // create the vulkan
         createInstance();
         setupDebugMessenger();
         createSurface();
-
         pickPhysicalDevice();
         createLogicalDevice();
 
@@ -245,13 +244,6 @@ public class Engine {
 
         createSwapChainObjects();
         createSyncObjects();
-    }
-
-
-    private static void check(int code) {
-        if (code != 0) {
-            throw new IllegalStateException(String.format("Vulkan error [0x%X]", code));
-        }
     }
 
     private static void createDescriptorSetLayout() {
@@ -568,7 +560,7 @@ public class Engine {
         vkDestroySwapchainKHR(device, swapChain, null);
     }
 
-    public static void cleanup() {
+    public static void end() {
         // Wait for the device to complete all operations before release resources
         vkDeviceWaitIdle(device);
 
@@ -949,8 +941,8 @@ public class Engine {
 
             // Let's compile the GLSL shaders into SPIR-V at runtime using the shaderc library
             // Check ShaderSPIRVUtils class to see how it can be done
-            ShaderSPIRVUtils.SPIRV vertShaderSPIRV = compileShaderFile("shaders/shader.vert", VERTEX_SHADER);
-            ShaderSPIRVUtils.SPIRV fragShaderSPIRV = compileShaderFile("shaders/shader.frag", FRAGMENT_SHADER);
+            ShaderSPIRVUtils.SPIRV vertShaderSPIRV = ShaderSPIRVUtils.compileShaderFile("shaders/shader.vert", VERTEX_SHADER);
+            ShaderSPIRVUtils.SPIRV fragShaderSPIRV = ShaderSPIRVUtils.compileShaderFile("shaders/shader.frag", FRAGMENT_SHADER);
 
             long vertShaderModule = createShaderModule(vertShaderSPIRV.bytecode());
             long fragShaderModule = createShaderModule(fragShaderSPIRV.bytecode());
@@ -1039,12 +1031,19 @@ public class Engine {
 
             VkPipelineColorBlendAttachmentState.Buffer colorBlendAttachment = VkPipelineColorBlendAttachmentState.callocStack(1, stack);
             colorBlendAttachment.colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
-            colorBlendAttachment.blendEnable(false);
+            colorBlendAttachment.blendEnable(true);
+            colorBlendAttachment.srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA);
+            colorBlendAttachment.dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+            colorBlendAttachment.colorBlendOp(VK_BLEND_OP_ADD);
+            colorBlendAttachment.srcAlphaBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA);
+            colorBlendAttachment.dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+            colorBlendAttachment.alphaBlendOp(VK_BLEND_OP_SUBTRACT);
 
             VkPipelineColorBlendStateCreateInfo colorBlending = VkPipelineColorBlendStateCreateInfo.callocStack(stack);
             colorBlending.sType(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
             colorBlending.logicOpEnable(false);
             colorBlending.logicOp(VK_LOGIC_OP_COPY);
+            VkPipelineColorBlendStateCreateInfo.nattachmentCount(colorBlending.address(), 1); // this is very silly, but they forgot to write the wrapper!
             colorBlending.pAttachments(colorBlendAttachment);
             colorBlending.blendConstants(stack.floats(0.0f, 0.0f, 0.0f, 0.0f));
 
@@ -1218,7 +1217,6 @@ public class Engine {
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                     pStagingBuffer,
                     pStagingBufferMemory);
-
 
             PointerBuffer data = stack.mallocPointer(1);
             vkMapMemory(device, pStagingBufferMemory.get(0), 0, totalImageSize, 0, data);
@@ -1867,6 +1865,146 @@ public class Engine {
                     .collect(toSet());
 
             return availableLayerNames.containsAll(VALIDATION_LAYERS);
+        }
+    }
+
+    // INLINED CLASSES
+    private static class Frame {
+
+        private final long imageAvailableSemaphore;
+        private final long renderFinishedSemaphore;
+        private final long fence;
+
+        public Frame(long imageAvailableSemaphore, long renderFinishedSemaphore, long fence) {
+            this.imageAvailableSemaphore = imageAvailableSemaphore;
+            this.renderFinishedSemaphore = renderFinishedSemaphore;
+            this.fence = fence;
+        }
+
+        public long imageAvailableSemaphore() {
+            return imageAvailableSemaphore;
+        }
+
+        public LongBuffer pImageAvailableSemaphore() {
+            return stackGet().longs(imageAvailableSemaphore);
+        }
+
+        public long renderFinishedSemaphore() {
+            return renderFinishedSemaphore;
+        }
+
+        public LongBuffer pRenderFinishedSemaphore() {
+            return stackGet().longs(renderFinishedSemaphore);
+        }
+
+        public long fence() {
+            return fence;
+        }
+
+        public LongBuffer pFence() {
+            return stackGet().longs(fence);
+        }
+    }
+
+    protected static class ShaderSPIRVUtils {
+
+        public static SPIRV compileShaderFile(String shaderFile, ShaderKind shaderKind) {
+            return compileShaderAbsoluteFile(getSystemClassLoader().getResource(shaderFile).toExternalForm(), shaderKind);
+        }
+
+        public static SPIRV compileShaderAbsoluteFile(String shaderFile, ShaderKind shaderKind) {
+            try {
+                String source = new String(Files.readAllBytes(Paths.get(new URI(shaderFile))));
+                return compileShader(shaderFile, source, shaderKind);
+            } catch (IOException | URISyntaxException e) {
+                e.printStackTrace();
+            }
+            return null;
+        }
+
+        public static SPIRV compileShader(String filename, String source, ShaderKind shaderKind) {
+
+            long compiler = shaderc_compiler_initialize();
+
+            if(compiler == NULL) {
+                throw new RuntimeException("Failed to create shader compiler");
+            }
+
+            long result = shaderc_compile_into_spv(compiler, source, shaderKind.kind, filename, "main", NULL);
+
+            if(result == NULL) {
+                throw new RuntimeException("Failed to compile shader " + filename + " into SPIR-V");
+            }
+
+            if(shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+                throw new RuntimeException("Failed to compile shader " + filename + "into SPIR-V:\n " + shaderc_result_get_error_message(result));
+            }
+
+            shaderc_compiler_release(compiler);
+
+            return new SPIRV(result, shaderc_result_get_bytes(result));
+        }
+
+        public enum ShaderKind {
+
+            VERTEX_SHADER(shaderc_glsl_vertex_shader),
+            GEOMETRY_SHADER(shaderc_glsl_geometry_shader),
+            FRAGMENT_SHADER(shaderc_glsl_fragment_shader);
+
+            private final int kind;
+
+            ShaderKind(int kind) {
+                this.kind = kind;
+            }
+        }
+
+        public static final class SPIRV implements NativeResource {
+
+            private final long handle;
+            private ByteBuffer bytecode;
+
+            public SPIRV(long handle, ByteBuffer bytecode) {
+                this.handle = handle;
+                this.bytecode = bytecode;
+            }
+
+            public ByteBuffer bytecode() {
+                return bytecode;
+            }
+
+            @Override
+            public void free() {
+                shaderc_result_release(handle);
+                bytecode = null; // Help the GC
+            }
+        }
+
+    }
+
+    protected static class UniformBufferObject {
+
+        public static final int MAX_INSTANCES = 128;
+        public static final int NUM_FLOATS    = (2 + MAX_INSTANCES) * 16;
+        public static final int MAT_SIZE      = 16 * Float.BYTES;
+        public static final int SIZEOF = (NUM_FLOATS * Float.BYTES) + (MAX_INSTANCES * Integer.BYTES);
+
+
+        public Matrix4f viewMatrix;
+        public Matrix4f projectionMatrix;
+        public Matrix4f modelMatrices[];
+
+        public int      textureIds[];
+
+        public UniformBufferObject() {
+            viewMatrix       = new Matrix4f();
+            projectionMatrix = new Matrix4f();
+            modelMatrices    = new Matrix4f[MAX_INSTANCES];
+            textureIds       = new int[MAX_INSTANCES];
+
+            for (int i = 0; i < MAX_INSTANCES; ++i) {
+                modelMatrices[i] = new Matrix4f();
+                textureIds   [i] = 1;
+            }
         }
     }
 
