@@ -5,12 +5,13 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
     mat4 models[128];
-    vec4 textureIds[128];
+    vec4 instanceData[128];
 } ubo;
 
 layout(location = 0) in  vec4 inColor;
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec3 fragTexCoord;
+layout(location = 2) out vec3 userData;
 
 vec2 positions[4] = vec2[]
   (
@@ -36,8 +37,12 @@ uint indices[6] = uint[]
   );
 
 void main() {
+    fragColor    = inColor;
+
     uint index   = indices[gl_VertexIndex];
     gl_Position  = ubo.proj * ubo.view * ubo.models[gl_InstanceIndex] * vec4(positions[index], 0.0, 1.0);
-    fragTexCoord = vec3(uvs[index], ubo.textureIds[gl_InstanceIndex].x);
-    fragColor    = inColor;
+
+    vec4 inst = ubo.instanceData[gl_InstanceIndex];
+    fragTexCoord = vec3(uvs[index], inst.w);
+    userData     = inst.xyz;
 }

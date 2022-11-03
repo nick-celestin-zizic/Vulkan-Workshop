@@ -6,7 +6,7 @@ import org.lwjgl.glfw.GLFWKeyCallbackI;
 import static org.lwjgl.glfw.GLFW.*;
 
 public class Main {
-    static final float PLAYER_JOLT_SPEED = 5f;
+    static final float PLAYER_JOLT_SPEED = 4f;
     static final float PLAYER_DRAG = 0.009f;
     static final float PLAYER_SCALE = .5f;
     static final float FUNNY_SPIN_CONSTANT = 10f;
@@ -20,9 +20,11 @@ public class Main {
     public static void main(String[] args) {
         Engine.start(1000, 1000, "test", keyCallback);
 
-        bgId      = Engine.createRenderEntity("vulkan.png");
-        playerId  = Engine.createRenderEntity("guy.jpg");
-        otherId   = Engine.createRenderEntity("texture.jpg");
+        bgId      = Engine.createRenderEntity("IEEE.png");
+        playerId  = Engine.createRenderEntity("vulkan.png");
+        otherId   = Engine.createRenderEntity("minerva.png");
+
+        Engine.setEntityUserData(playerId, 1f, 0f, 0f);
 
         // initialize timing stuff
         float oldTime = (float) glfwGetTime();
@@ -50,8 +52,8 @@ public class Main {
 
             Engine.setEntityModel(otherId, (m) -> m
                     .identity()
-                    .scale(PLAYER_SCALE * 0.75f)
-                    .translate(-playerPos.y, playerPos.x, 0f)
+                    .scale(PLAYER_SCALE)
+                    .translate((float) Math.sin((double) -playerPos.y) * 1.5f, (float) Math.cos((double) playerPos.x) * 1.5f, 0f)
                     .rotate(-playerRotation, 0.0f, 0.0f, 1.0f));
 
             Engine.setEntityModel(bgId, (m) -> m

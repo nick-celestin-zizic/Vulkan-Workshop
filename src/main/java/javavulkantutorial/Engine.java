@@ -1,6 +1,7 @@
 package javavulkantutorial;
 
 import org.joml.Matrix4f;
+import org.joml.Vector4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.glfw.GLFWKeyCallbackI;
@@ -96,20 +97,6 @@ public class Engine {
 
     }
 
-    interface MatrixModifierI {  void modify(Matrix4f m); }
-    public static void setEntityModel(int entityId, MatrixModifierI m) { m.modify(ubo.modelMatrices[entityId]); }
-    public static void setEntityTexture(int entityId, String assetName) {
-        Integer texId = textureCatalogue.get(assetName);
-        if (texId == null) throw new RuntimeException("texture `" + assetName + "` does not exist");
-        setEntityTexture(entityId, texId);
-    }
-    public static void setEntityTexture(int entityId, int texId) { ubo.textureIds[entityId] = texId; }
-
-    public static boolean processInput() {
-        glfwPollEvents();
-        return !glfwWindowShouldClose(window);
-    }
-
     private static class QueueFamilyIndices {
 
         // We use Integer to use null as the empty value
@@ -183,29 +170,11 @@ public class Engine {
 
     static boolean framebufferResize;
 
-    // ======= METHODS ======= //
-    private static void framebufferResizeCallback(long window, int width, int height) {
-        framebufferResize = true;
-    }
-
     private static int nextRenderEntityId = 0;
-    public static int createRenderEntity(String assetName) {
-        int id = nextRenderEntityId++;
-        if (id >= UniformBufferObject.MAX_INSTANCES) throw new RuntimeException("TOO MANY ENTITIES");
-
-        Integer texId = textureCatalogue.get(assetName);
-        if (texId == null) throw new RuntimeException("Could not find texture " + assetName);
-
-        ubo.textureIds[id] = texId;
-
-        recreateSwapChain();
-        return id;
-    }
-
     public static UniformBufferObject ubo = new UniformBufferObject();
-
-
     public static int numTextures;
+
+    // ========= API ========= //
     public static void start(int width, int height, String title, GLFWKeyCallbackI keyCallback) {
         // create the window
         if(!glfwInit()) {
@@ -244,6 +213,44 @@ public class Engine {
 
         createSwapChainObjects();
         createSyncObjects();
+    }
+    public static int createRenderEntity(String assetName) {
+        int id = nextRenderEntityId++;
+        if (id >= UniformBufferObject.MAX_INSTANCES) throw new RuntimeException("TOO MANY ENTITIES");
+
+        Integer texId = textureCatalogue.get(assetName);
+        if (texId == null) throw new RuntimeException("Could not find texture " + assetName);
+
+        ubo.userData[id].w = (float) texId;
+
+        recreateSwapChain();
+        return id;
+    }
+    interface MatrixModifierI {  void modify(Matrix4f m); }
+    public static void setEntityModel(int entityId, MatrixModifierI m) { m.modify(ubo.modelMatrices[entityId]); }
+    public static void setEntityTexture(int entityId, String assetName) {
+        Integer texId = textureCatalogue.get(assetName);
+        if (texId == null) throw new RuntimeException("texture `" + assetName + "` does not exist");
+        setEntityTexture(entityId, texId);
+    }
+    public static void setEntityTexture(int entityId, int texId) {
+        ubo.userData[entityId].w = (float) texId;
+    }
+
+    public static void setEntityUserData(int entityId, float x, float y, float z) {
+        ubo.userData[entityId].x = x;
+        ubo.userData[entityId].y = y;
+        ubo.userData[entityId].z = z;
+    }
+
+    public static boolean processInput() {
+        glfwPollEvents();
+        return !glfwWindowShouldClose(window);
+    }
+
+    // ======= METHODS ======= //
+    private static void framebufferResizeCallback(long window, int width, int height) {
+        framebufferResize = true;
     }
 
     private static void createDescriptorSetLayout() {
@@ -1599,9 +1606,8 @@ public class Engine {
                 position += ubo.MAT_SIZE;
             }
 
-            for (int id : ubo.textureIds) {
-                float fId = (float) id;
-                MemoryUtil.memByteBuffer(data.get(0) + position, Float.BYTES).putFloat((float) id);
+            for (Vector4f userData : ubo.userData) {
+                userData.get(MemoryUtil.memByteBuffer(data.get(0) + position, Float.BYTES * 4));
                 position += Float.BYTES * 4;
             }
 
@@ -1993,17 +1999,18 @@ public class Engine {
         public Matrix4f projectionMatrix;
         public Matrix4f modelMatrices[];
 
-        public int      textureIds[];
+        public Vector4f userData[]; // w is ALWAYS the textureId
 
         public UniformBufferObject() {
             viewMatrix       = new Matrix4f();
             projectionMatrix = new Matrix4f();
             modelMatrices    = new Matrix4f[MAX_INSTANCES];
-            textureIds       = new int[MAX_INSTANCES];
+            userData         = new Vector4f[MAX_INSTANCES];
 
             for (int i = 0; i < MAX_INSTANCES; ++i) {
                 modelMatrices[i] = new Matrix4f();
-                textureIds   [i] = 1;
+                userData     [i] = new Vector4f();
+                userData[i].w = -1;
             }
         }
     }
